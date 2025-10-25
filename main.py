@@ -10,9 +10,6 @@ CACHE_FILENAME = "conceptnet_cache.json"
 
 
 # --- Rate Limiter ---
-# This class ensures we don't violate ConceptNet's API limits.
-# 3600 req/hr = 1 req/sec. We'll stick to this.
-
 class RateLimiter:
     def __init__(self, requests_per_second):
         self.delay = 1.0 / requests_per_second
@@ -34,8 +31,6 @@ class RateLimiter:
 
 
 # --- Pathfinder Class ---
-# Encapsulates the cache, rate limiter, and new bi-directional search.
-
 class ConceptNetPathfinder:
     def __init__(self, cache_file=CACHE_FILENAME):
         self.cache_file = cache_file
@@ -68,6 +63,7 @@ class ConceptNetPathfinder:
         except IOError as e:
             print(f"[Cache] Error: Could not save cache: {e}")
 
+    # --- THIS FUNCTION IS FIXED ---
     def get_edges(self, node_uri):
         """
         Gets all edges for a node, using the cache if available.
@@ -101,13 +97,21 @@ class ConceptNetPathfinder:
                     neighbor_node = start_node
                     edges.append((rel_label, neighbor_node, "<--"))
 
+            # 3. Store the result in the cache
+            # --- FIX ---
+            # These two lines MUST be INSIDE the 'try' block.
+            # We only cache a result if the API call was successful.
+            self.node_cache[node_uri] = edges
+            return edges
+
         except requests.exceptions.RequestException as e:
             print(f"  [API Error] Failed to get neighbors for {node_uri}: {e}")
-            pass
+            # On error, return an empty list BUT DO NOT CACHE IT.
+            return []
 
-            # 3. Store the result in the cache
-        self.node_cache[node_uri] = edges
-        return edges
+        # --- BUG WAS HERE ---
+        # The cache line was outside the try/except block,
+        # causing failed API calls to be cached as empty lists [].
 
     def reconstruct_and_print_path(self, start_node, end_node, path_fwd, path_bwd):
         """
@@ -123,24 +127,15 @@ class ConceptNetPathfinder:
             current = next_node
 
         # 2. Print the backward path (meet -> end)
-        # We need to reverse the path and flip the arrows
-
-        # The nodes in path_bwd are [node_near_end, ..., node_before_meet, meet]
-        # We need to get the nodes in order from meet -> end
         path_bwd_nodes = [end_node] + [p[1] for p in path_bwd]
         path_bwd_nodes.reverse()  # Now [meet, node_before_meet, ..., end]
-
-        # The relations are also in order from end -> meet. We reverse them.
         reversed_rels = list(reversed(path_bwd))
 
         for i in range(len(reversed_rels)):
             rel, node_in_path, dir_from_end = reversed_rels[i]
 
-            # This is the direction *from* the end. We flip it for printing.
             flipped_dir = "<--" if dir_from_end == "-->" else "-->"
             arrow = " --[ {} ]--> ".format(rel) if flipped_dir == "-->" else " <--[ {} ]-- ".format(rel)
-
-            # The next node in our chain is from the reversed node list
             next_node_in_chain = path_bwd_nodes[i + 1]
             print(f"   {arrow} {next_node_in_chain}")
             current = next_node_in_chain
@@ -155,14 +150,9 @@ class ConceptNetPathfinder:
 
         print(f"Searching for path:\n  FROM: {start_node}\n  TO:   {end_node}\n")
 
-        # Forward search (from start)
         queue_fwd = deque([(start_node, [])])  # (node, path_list)
-        # paths_fwd stores {node: path_list} for all visited nodes
         paths_fwd = {start_node: []}
-
-        # Backward search (from end)
         queue_bwd = deque([(end_node, [])])  # (node, path_list)
-        # paths_bwd stores {node: path_list} for all visited nodes
         paths_bwd = {end_node: []}
 
         start_time = time.time()
@@ -173,11 +163,9 @@ class ConceptNetPathfinder:
 
                 # --- 1. Expand Forward Layer ---
                 if queue_fwd:
-                    # We expand one node at a time for simplicity
                     current_fwd, path_fwd = queue_fwd.popleft()
                     nodes_processed += 1
 
-                    # Optimization: Don't explore paths that are already too long
                     if len(path_fwd) > 10:  # Pruning
                         continue
 
@@ -189,14 +177,11 @@ class ConceptNetPathfinder:
 
                     edges = self.get_edges(current_fwd)
                     for rel, neighbor, direction in edges:
-                        # --- INTERSECTION FOUND (from fwd) ---
                         if neighbor in paths_bwd:
                             print(f"\n--- 🥳 Path Found! (Intersection at {neighbor}) ---")
                             print(f"Processed {nodes_processed} nodes in {time.time() - start_time:.2f} seconds.")
-
                             new_path_fwd = path_fwd + [(rel, neighbor, direction)]
                             path_bwd = paths_bwd[neighbor]
-
                             self.reconstruct_and_print_path(start_node, end_node, new_path_fwd, path_bwd)
                             return
 
@@ -215,14 +200,11 @@ class ConceptNetPathfinder:
 
                     edges = self.get_edges(current_bwd)
                     for rel, neighbor, direction in edges:
-                        # --- INTERSECTION FOUND (from bwd) ---
                         if neighbor in paths_fwd:
                             print(f"\n--- 🥳 Path Found! (Intersection at {neighbor}) ---")
                             print(f"Processed {nodes_processed} nodes in {time.time() - start_time:.2f} seconds.")
-
                             path_fwd = paths_fwd[neighbor]
                             new_path_bwd = path_bwd + [(rel, neighbor, direction)]
-
                             self.reconstruct_and_print_path(start_node, end_node, path_fwd, new_path_bwd)
                             return
 
@@ -231,48 +213,35 @@ class ConceptNetPathfinder:
                             paths_bwd[neighbor] = new_path_bwd
                             queue_bwd.append((neighbor, new_path_bwd))
 
-            # If either queue becomes empty, no path was found
             print(f"\n--- 😥 Path Not Found ---")
             print(f"Explored {nodes_processed} nodes in {time.time() - start_time:.2f} seconds.")
 
         finally:
-            # IMPORTANT: Save the cache whether we found a path or not.
             self.save_cache()
 
 
 # --- Main Execution ---
 if __name__ == "__main__":
-    # Example 1: Your original nodes
-    start_1 = "/c/en/rome"
-    target_1 = "/c/en/capital_of_italy"
-
-    # Example 2: A clearer path
     start_2 = "/c/en/banana"
     target_2 = "/c/en/fruit"
 
-    # Example 3: A longer path
-    start_3 = "/c/en/cat"
-    target_3 = "/c/en/animal"
-
-    # Example 4: A more interesting path
     start_4 = "/c/en/puppy"
     target_4 = "/c/en/loyal"
 
     # --- Run the Search ---
     pathfinder = ConceptNetPathfinder()
 
-    # pathfinder.find_path(start_1, target_1)
-    # print("\n" + "="*40 + "\n")
-
     pathfinder.find_path(start_2, target_2)
     print("\n" + "=" * 40 + "\n")
-
-    # pathfinder.find_path(start_3, target_3)
-    # print("\n" + "="*40 + "\n")
 
     pathfinder.find_path(start_4, target_4)
     print("\n" + "=" * 40 + "\n")
 
+    # --- Long Haul Tests ---
+    # pathfinder.find_path("/c/en/toaster", "/c/en/justice")
+    # print("\n" + "=" * 40 + "\n")
+
+    # ... (rest of your tests) ...
     pathfinder.find_path("/c/en/toaster", "/c/en/justice")
     print("\n" + "=" * 40 + "\n")
 
