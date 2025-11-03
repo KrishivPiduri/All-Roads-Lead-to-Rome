@@ -263,4 +263,6 @@ if __name__ == "__main__":
     pathfinder.find_path("/c/en/platypus", "/c/en/nostalgia")
     print("\n" + "=" * 40 + "\n")
 
-    pathfinder.find_path("/c/en/apple", "/c/en/celestial_object")
+    pathfinder.find_path("/c/en/hair", "/c/en/bear")
+    pathfinder.find_path("/c/es/naranja", "/c/en/death_star")
+    pathfinder.find_path("/c/es/infinity", "/c/en/zero")
